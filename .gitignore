@@ -1,0 +1,37 @@
+# .gitignore — pour wa-mention-all
+
+# Node.js dependencies
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# Authentification WhatsApp (ne jamais versionner !)
+auth/
+
+# Fichiers temporaires et de log
+*.log
+*.tmp
+*.swp
+
+# PM2 dump files
+.pm2/
+ecosystem.config.js
+
+# Systèmes Unix / Linux
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*~
+
+# Historique de terminal ou de test
+nohup.out
+
+# Fichiers générés par l'éditeur
+.vscode/
+.idea/
+
+# Clés privées éventuelles
+*.pem
+*.key
