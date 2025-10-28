@@ -1,4 +1,4 @@
-// bot.js — WhatsApp mention-all via "#" avec override, throttle configurable et suppression du trigger
+// bot.js — Script Corrigé
 global.crypto = require('crypto');
 
 const {
@@ -13,12 +13,12 @@ const P = require('pino');
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 // configuration via env
-const THROTTLE_SEC = parseInt(process.env.THROTTLE_SEC || "1", 10); // en secondes
+const THROTTLE_SEC = parseInt(process.env.THROTTLE_SEC || "1", 10);
 const THROTTLE_MS = THROTTLE_SEC * 1000;
 const ENABLE_FEEDBACK = process.env.THROTTLE_FEEDBACK === "1";
 
-const lastAll = new Map(); // timestamp du dernier # par groupe
-const processed = new Set(); // éviter double traitement
+const lastAll = new Map();
+const processed = new Set();
 
 function extractText(msg) {
   if (!msg.message) return '';
@@ -46,6 +46,8 @@ async function start() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  let presenceInterval = null; // Stockage du timer
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -54,13 +56,33 @@ async function start() {
       qrcode.generate(qr, { small: true });
     }
 
+    // 1. QUAND LA CONNEXION EST OUVERTE
     if (connection === 'open') {
       console.log('✅ Bot connecté à WhatsApp');
+
+      if (presenceInterval) clearInterval(presenceInterval); // Sécurité
+
+      // ON LANCE LE TIMER SEULEMENT ICI
+      presenceInterval = setInterval(() => {
+        try {
+          if (sock.user) { // Sécurité
+            sock.sendPresenceUpdate('available');
+          }
+        } catch (e) {
+          console.warn('Impossible d\'envoyer la présence:', e);
+        }
+      }, 30_000); 
     }
 
+    // 2. QUAND LA CONNEXION EST FERMÉE
     if (connection === 'close') {
+      // ON COUPE LE TIMER
+      if (presenceInterval) clearInterval(presenceInterval);
+      presenceInterval = null;
+
       const reasonCode = lastDisconnect?.error?.output?.statusCode;
       console.log('🔌 Déconnecté. Reason:', reasonCode || lastDisconnect?.error);
+
       const shouldReconnect = reasonCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
         console.log('↻ Tentative de reconnexion dans 5 secondes...');
@@ -72,12 +94,7 @@ async function start() {
     }
   });
 
-  // Maintenir une présence pour éviter idle
-  setInterval(() => {
-    try {
-      sock.sendPresenceUpdate('available');
-    } catch {}
-  }, 30_000);
+  // L'ANCIEN SETINTERVAL A ÉTÉ SUPPRIMÉ D'ICI
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
@@ -88,8 +105,7 @@ async function start() {
     if (processed.has(msgId)) return;
     processed.add(msgId);
 
-    // on ne traite que tes propres commandes
-    if (!msg.key.fromMe) return;
+    if (!msg.key.fromMe) return; // on ne traite que tes propres commandes
 
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid || !remoteJid.endsWith('@g.us')) return; // uniquement groupes
@@ -131,7 +147,6 @@ async function start() {
       });
       console.log(`✅ Mentionné ${mentions.length} membres dans ${remoteJid}`);
 
-      // essayer de supprimer le message original
       try {
         await sock.sendMessage(remoteJid, { delete: msg.key });
         console.log('🗑️ Message de commande supprimé.');
