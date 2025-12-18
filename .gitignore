@@ -1,37 +1,24 @@
-# .gitignore — pour wa-mention-all
-
-# Node.js dependencies
+# --- Dependencies ---
 node_modules/
-package-lock.json
-pnpm-lock.yaml
+package-lock.json  
 
-# Authentification WhatsApp (ne jamais versionner !)
-auth/
+# --- Security & Secrets (CRITICAL) ---
+.env                
+auth_info/          # Contient la session WhatsApp (clés de chiffrement)
 
-# Fichiers temporaires et de log
+# --- Logs & Debug ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
 *.log
-*.tmp
-*.swp
 
-# PM2 dump files
-.pm2/
-ecosystem.config.js
+# --- OS & IDE Junk ---
+.DS_Store           # Mac
+Thumbs.db           # Windows
+.vscode/            # Settings perso VS Code
+.idea/              # Settings JetBrains
 
-# Systèmes Unix / Linux
-.DS_Store
-Thumbs.db
-
-# Backup files
-*.bak
-*~
-
-# Historique de terminal ou de test
-nohup.out
-
-# Fichiers générés par l'éditeur
-.vscode/
-.idea/
-
-# Clés privées éventuelles
-*.pem
-*.key
+# --- Docker ---
+# On garde le Dockerfile et le compose, mais pas les overrides locaux éventuels
+docker-compose.override.yml

@@ -1,0 +1,15 @@
+services:
+  wa-bot:
+    build: .
+    container_name: wa-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    networks:
+      - proxy
+    volumes:
+      - ./auth_info:/app/auth_info
+
+networks:
+  proxy:
+    external: true

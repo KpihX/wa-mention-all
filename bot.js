@@ -1,21 +1,26 @@
-// bot.js — Script Corrigé
+// bot.js — Version Finale (Détection d'identité Robuste)
 global.crypto = require('crypto');
 
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason
-} = require('baileys');
+  DisconnectReason,
+  jidNormalizedUser // Fonction officielle Baileys pour nettoyer les IDs !
+} = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const P = require('pino');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// configuration via env
+// --- CONFIGURATION ---
 const THROTTLE_SEC = parseInt(process.env.THROTTLE_SEC || "1", 10);
 const THROTTLE_MS = THROTTLE_SEC * 1000;
-const ENABLE_FEEDBACK = process.env.THROTTLE_FEEDBACK === "1";
+
+// On prépare la liste blanche depuis le .env
+const RAW_ALLOWED = process.env.ALLOWED_IDS || "";
+// On nettoie les IDs du .env pour être sûr qu'ils sont au bon format
+const ALLOWED_IDS = RAW_ALLOWED.split(',').map(id => jidNormalizedUser(id.trim())).filter(id => id.length > 0);
 
 const lastAll = new Map();
 const processed = new Set();
@@ -33,69 +38,54 @@ function extractText(msg) {
 }
 
 async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState('./auth');
+  const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
+
+  console.log(`🤖 Démarrage du bot v${version.join('.')}`);
 
   const sock = makeWASocket({
     version,
     auth: state,
     printQRInTerminal: false,
     logger: P({ level: 'silent' }),
-    browser: ['Ubuntu', 'Chrome', '22.0.0'],
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  let presenceInterval = null; // Stockage du timer
+  let presenceInterval = null;
 
+  // --- GESTION CONNEXION ---
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('📱 Scanne ce QR code :');
+      console.log('\nSCANNEZ CE QR CODE :');
       qrcode.generate(qr, { small: true });
     }
 
-    // 1. QUAND LA CONNEXION EST OUVERTE
     if (connection === 'open') {
-      console.log('✅ Bot connecté à WhatsApp');
+      // On récupère le VRAI ID du bot connecté (Ex: 33612345678@s.whatsapp.net)
+      const botId = jidNormalizedUser(sock.user.id);
+      console.log(`✅ Connecté en tant que : ${botId}`);
+      console.log(`🛡️ Whitelist (.env) : ${ALLOWED_IDS.join(', ')}`);
 
-      if (presenceInterval) clearInterval(presenceInterval); // Sécurité
-
-      // ON LANCE LE TIMER SEULEMENT ICI
+      if (presenceInterval) clearInterval(presenceInterval);
       presenceInterval = setInterval(() => {
-        try {
-          if (sock.user) { // Sécurité
-            sock.sendPresenceUpdate('available');
-          }
-        } catch (e) {
-          console.warn('Impossible d\'envoyer la présence:', e);
-        }
-      }, 30_000); 
+        try { if (sock.user) sock.sendPresenceUpdate('available'); } catch (e) {}
+      }, 30000); 
     }
 
-    // 2. QUAND LA CONNEXION EST FERMÉE
     if (connection === 'close') {
-      // ON COUPE LE TIMER
       if (presenceInterval) clearInterval(presenceInterval);
-      presenceInterval = null;
-
-      const reasonCode = lastDisconnect?.error?.output?.statusCode;
-      console.log('🔌 Déconnecté. Reason:', reasonCode || lastDisconnect?.error);
-
-      const shouldReconnect = reasonCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) {
-        console.log('↻ Tentative de reconnexion dans 5 secondes...');
-        await delay(5000);
-        start();
-      } else {
-        console.log('❌ Session logout. Supprime ./auth et rescanne le QR si nécessaire.');
-      }
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = reason !== DisconnectReason.loggedOut;
+      console.log(`🔌 Déco (Code ${reason}). Reconnect: ${shouldReconnect}`);
+      if (shouldReconnect) { await delay(5000); start(); }
+      else { process.exit(1); }
     }
   });
 
-  // L'ANCIEN SETINTERVAL A ÉTÉ SUPPRIMÉ D'ICI
-
+  // --- GESTION MESSAGES ---
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     const msg = messages[0];
@@ -105,34 +95,52 @@ async function start() {
     if (processed.has(msgId)) return;
     processed.add(msgId);
 
-    if (!msg.key.fromMe) return; // on ne traite que tes propres commandes
+    // --- 1. IDENTIFICATION DE L'AUTEUR (NORMALISÉE) ---
+    // L'auteur brut (peut être un LID, un JID avec :device, etc.)
+    const rawAuthor = msg.key.participant || msg.key.remoteJid;
+    // L'auteur propre (336...@s.whatsapp.net)
+    const author = jidNormalizedUser(rawAuthor);
+    
+    // Le Bot lui-même (Moi)
+    const botMe = jidNormalizedUser(sock.user?.id);
 
+    // --- 2. LOGIQUE DE SÉCURITÉ ---
+    // Est-ce que le message vient de "Moi" (peu importe le device) ?
+    const isMe = (author === botMe);
+    
+    // Est-ce que l'auteur est dans la liste blanche ?
+    const isWhitelisted = ALLOWED_IDS.includes(author);
+
+    // Verdict : Autorisé ou pas ?
+    const isAuthorized = isMe || isWhitelisted;
+
+    // Logs de debug clairs
+    // console.log(`DEBUG: Auteur=${author} | Bot=${botMe} | isMe=${isMe} | Auth=${isAuthorized}`);
+
+    // --- 3. FILTRAGE GROUPE & TEXTE ---
     const remoteJid = msg.key.remoteJid;
-    if (!remoteJid || !remoteJid.endsWith('@g.us')) return; // uniquement groupes
+    if (!remoteJid || !remoteJid.endsWith('@g.us')) return;
 
-    let text = extractText(msg).trim();
-    if (!text) return;
+    const textRaw = extractText(msg).trim();
+    const isForce = textRaw.startsWith('#!');
+    if (!textRaw.startsWith('#') && !isForce) return; // Pas une commande
 
-    const isForce = text.startsWith('#!');
-    if (!text.startsWith('#') && !isForce) return;
+    // Si c'est une commande mais non autorisé -> On log et on stop
+    if (!isAuthorized) {
+        console.log(`⛔ Commande bloquée de ${author} (Non autorisé)`);
+        return;
+    }
 
-    const payload = isForce ? text.slice(2).trim() : text.slice(1).trim();
-    if (!payload) return;
+    // --- 4. EXÉCUTION ---
+    console.log(`🚀 Commande validée de ${author} !`);
+    const payload = isForce ? textRaw.slice(2).trim() : textRaw.slice(1).trim();
+    const finalPayload = payload.length > 0 ? payload : "Attention tout le monde !";
 
     const now = Date.now();
     const last = lastAll.get(remoteJid) || 0;
+    
     if (!isForce && now - last < THROTTLE_MS) {
-      const remaining = Math.ceil((THROTTLE_MS - (now - last)) / 1000);
-      console.log(`⏳ Throttled # pour ${remoteJid}, encore ${remaining}s (override avec #!)`);
-      if (ENABLE_FEEDBACK) {
-        try {
-          await sock.sendMessage(remoteJid, {
-            text: `⏳ Patiente encore ${remaining}s avant de réutiliser \`#\`.`
-          });
-        } catch (e) {
-          console.error('Erreur feedback throttle:', e);
-        }
-      }
+      console.log(`⏳ Throttled`);
       return;
     }
     lastAll.set(remoteJid, now);
@@ -140,21 +148,13 @@ async function start() {
     try {
       const groupMetadata = await sock.groupMetadata(remoteJid);
       const mentions = groupMetadata.participants.map(p => p.id);
-      console.log(`📍 # déclenché dans ${remoteJid}, membres:`, mentions);
-      await sock.sendMessage(remoteJid, {
-        text: `📣 ${payload}`,
-        mentions
-      });
-      console.log(`✅ Mentionné ${mentions.length} membres dans ${remoteJid}`);
-
-      try {
-        await sock.sendMessage(remoteJid, { delete: msg.key });
-        console.log('🗑️ Message de commande supprimé.');
-      } catch (delErr) {
-        console.warn('⚠️ Impossible de supprimer le trigger original :', delErr.message || delErr);
-      }
+      
+      await sock.sendMessage(remoteJid, { text: `📣 ${finalPayload}`, mentions });
+      
+      try { await sock.sendMessage(remoteJid, { delete: msg.key }); } catch (e) {}
+      
     } catch (e) {
-      console.error('Erreur lors du #:', e);
+      console.error('Erreur:', e);
     }
   });
 }

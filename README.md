@@ -1,252 +1,180 @@
-# wa-mention-all  
+# wa-mention-all (Dockerized Homelab Version)
 *Author: KpihX*
 
 ## 1. Project Overview
 
-**`wa-mention-all`** is a self-hosted WhatsApp group “mention all” bot designed to run persistently on a minimal Oracle Cloud Always Free instance.  
-Its primary function: when the author (you) sends `# <message>` in a WhatsApp group, the bot replies by tagging/mentioning **every participant** in that group.  
-A forced override uses `#! <message>` to bypass rate limits.
+**`wa-mention-all`** is a self-hosted WhatsApp bot designed to run in a **Docker container** within a Homelab environment (e.g., Proxmox LXC).
+Its primary function is to **tag/mention every participant** in a WhatsApp group when an authorized user sends a specific command.
 
-This repository contains:
-- Persistent session management with WhatsApp via Baileys.
-- Rate-limited “mention all” trigger.
-- Self-healing and auto-reconnect logic.
-- Keep-alive mechanism so Oracle Cloud won’t consider the VM idle.
-- `pm2` supervision for 24/7 resilience across reboots.
+It uses the **Baileys** library to communicate directly with WhatsApp servers via WebSocket, making it extremely lightweight and headless (no browser/Selenium required).
+
+### Key Features
+- **Dockerized**: Clean deployment with `docker-compose`.
+- **Network Resilient**: Configured to work behind strict corporate/university proxies (e.g., École Polytechnique).
+- **Persistent Session**: No need to rescan QR code after restarts (via Docker volumes).
+- **Secure Whitelist**: Only authorized JIDs (phone numbers) or LIDs defined in `.env` can trigger the bot.
+- **Robust Identity Check**: Normalizes IDs to handle Multi-Device mismatches (LID vs JID).
+- **Rate Limiting**: Prevents spamming with a configurable throttle delay.
 
 ---
 
-## 2. Architecture and Flow
+## 2. Architecture
 
-```
-+----------------------+        +------------------------+         +---------------------+
-| WhatsApp Group       | <----> | WhatsApp Account (you) | <-----> | wa-mention-all  Bot |
-| (members)            |         | (mobile, QR scan)      |          | running on Oracle   |
-+----------------------+         +------------------------+         +---------------------+
-                                                                       |        |
-                                                                       |        |
-                                              +------------------------+        +------------------+
-                                              |                                         |
-                                   +----------v-----------+              +----------v----------+
-                                   | bot.js (Baileys client)|              | keepalive.sh ping  |
-                                   | handles "#..."         |              | (avoids idle)      |
-                                   +----------+-----------+              +----------+----------+
-                                              |                                     |
-                                mentions all participants                         keeps instance active
-                                              |                                     |
-                                       WhatsApp group <-----------------------------+
+```mermaid
+graph LR
+    User[Authorized User] -- "# Message" --> WhatsAppCloud
+    WhatsAppCloud -- WebSocket --> DockerContainer
+    subgraph Docker Host - Homelab
+        DockerContainer[Container: wa-bot]
+        Volume[(Volume: auth_info)]
+        EnvFile[.env]
+    end
+    DockerContainer -- "Load Session" --> Volume
+    DockerContainer -- "Read Config/Whitelist" --> EnvFile
+    DockerContainer -- "Mention All" --> WhatsAppCloud
+    WhatsAppCloud -- Notification --> Group[WhatsApp Group]
 ```
 
-### Key components
-- `bot.js`: Core logic. Watches for triggers (`#` or `#!`) from *your own* WhatsApp account and replies by mentioning all group members, with throttle and auto-reconnect.
-- `keepalive.sh`: Periodically pings an external endpoint to keep the Oracle Cloud instance considered “active” (prevents automatic suspension due to idleness).
-- `pm2`: Supervises both `bot.js` and `keepalive.sh`, ensuring they restart on crashes and persist across reboots.
-- `auth/`: Persistent WhatsApp session credentials — do **not** delete unless you intentionally want to re-authenticate (requires rescanning QR).
-- `node_modules`, `package.json`: Dependencies, including `baileys` for WhatsApp Web protocol handling.
+**Workflow:**
+1. The bot listens for messages starting with `#` (standard) or `#!` (force).
+2. It verifies the author against its own identity (`fromMe`) AND the `ALLOWED_IDS` whitelist defined in `.env`.
+3. It normalizes IDs to ensure compatibility between Phone Numbers and Linked Device IDs (LIDs).
+4. If authorized, it fetches group metadata, mentions all participants, and deletes the trigger message.
 
 ---
 
-## 3. File Descriptions
+## 3. Prerequisites
 
-- `bot.js`  
-  - Listens for messages you send in groups starting with `#` (normal) or `#!` (force).  
-  - Builds a mention list of all group participants and sends `📣 <your message>` with mentions.  
-  - Deletes the original trigger message if possible.  
-  - Applies configurable throttling to avoid abuse.  
-  - Auto-reconnects if the WhatsApp connection drops.
-
-- `keepalive.sh`  
-  - Bash loop that `curl`s an external endpoint every 10 minutes to create outbound traffic, preventing Oracle from marking the VM idle.  
-  - Resilient to transient failures.
-
-- `auth/`  
-  - Holds WhatsApp session data. Keeps you logged in without rescanning the QR each time.
-
-- `package.json` & `package-lock.json`  
-  - Node project metadata and locked dependency versions.
-
-- `node_modules/`  
-  - Installed libraries (`baileys`, `qrcode-terminal`, `pino`, etc.)
+- **Docker** and **Docker Compose** installed on the host.
+- A **WhatsApp Account** (can be your main account or a dedicated bot account) to scan the QR code.
+- (Optional) HTTP Proxy information if running on a restricted network.
 
 ---
 
-## 4. Configuration
+## 4. Installation & Setup
 
-Environment variables (used by `bot.js`):
-
-| Name             | Default | Meaning |
-|------------------|---------|---------|
-| `THROTTLE_SEC`   | `1`     | Minimum seconds between successive `#` mentions per group (can be bypassed with `#!`) |
-| `THROTTLE_FEEDBACK` | `0` or `1` | If `1`, bot sends a “wait” message when throttled; if `0`, it just logs internally |
-
-Usage example overriding defaults:
+### 1. Clone the repository
 ```bash
-THROTTLE_SEC=5 THROTTLE_FEEDBACK=1 node bot.js
+git clone https://github.com/KpihX/wa-mention-all.git
+cd wa-mention-all
 ```
 
----
-
-## 5. Installation & Setup (fresh instance)
+### 2. Configuration (`.env`)
+Create a `.env` file based on the example. This is critical for security and network access.
 
 ```bash
-# 1. Update and install basics (if not already)
-sudo apt update && sudo apt install -y curl git build-essential
-
-# 2. Ensure Node.js (v22+ recommended) is installed. Example via NodeSource:
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# 3. Move to project directory (if cloned already)
-cd ~/wa-mention-all
-
-# 4. Install dependencies
-npm install baileys qrcode-terminal pino
-
-# 5. Create or verify bot.js and keepalive.sh are present (they should be here)
-# 6. Launch for first time to scan QR
-node bot.js
-# Scan the QR code from the terminal with WhatsApp on your phone (Linked Devices -> Link a device)
+cp .env.example .env
+nano .env
 ```
+
+**Configuration Reference:**
+
+```ini
+# --- Anti-Spam ---
+# Minimum seconds between two mentions in the same group.
+THROTTLE_SEC=2
+
+# --- Security & Whitelist (CRITICAL) ---
+# List of authorized users who can trigger the bot.
+# Format: CountryCodePhoneNumber@s.whatsapp.net (Standard JID) or UserID@lid (Linked Device ID)
+# Multiple IDs must be separated by a comma without spaces.
+# Example: 33612345678@s.whatsapp.net,23770873475890@lid
+ALLOWED_IDS=336XXXXXXXXX@s.whatsapp.net
+```
+
+### 3. Build and Start
+This command builds the image (installing dependencies via proxy) and starts the container.
+```bash
+docker compose up -d --build
+```
+
+### 4. Authenticate (Scan QR)
+The bot will generate a QR Code in the logs upon first launch.
+```bash
+docker logs -f wa-bot
+```
+1. Open WhatsApp on your phone.
+2. Go to **Linked Devices** > **Link a Device**.
+3. Scan the ASCII QR code displayed in your terminal.
+4. Once you see `✅ Bot connecté à WhatsApp avec succès !`, you can exit logs with `Ctrl + C`.
 
 ---
 
-## 6. Usage
+## 5. Usage
 
-- In a WhatsApp group where your account is present, send:
+In any WhatsApp group where you (or the bot account) are a member:
+
+- **Standard Trigger**:
+  ```text
+  # Hello Team
   ```
-  # Hello everyone!
+  *Result:* The bot replies "📣 Hello Team" and tags everyone. Checks for throttling.
+
+- **Forced Trigger**:
+  ```text
+  #! Urgent Alert
   ```
-  → Bot replies tagging every member: `📣 Hello everyone!`
-
-- To override throttle and force immediate mention even if recently used:
-  ```
-  #! Urgent message to all
-  ```
-
-- Throttling default: 1 second between uses per group (configurable). You can adjust with `THROTTLE_SEC`.
+  *Result:* Bypasses the throttle timer and tags everyone immediately.
 
 ---
 
-## 7. Persistent Deployment (with `pm2`)
+## 6. Files Structure
 
-Ensure `pm2` is installed and used to manage both the bot and keepalive:
+- **`Dockerfile`**: Builds the Alpine Node.js image, installs `git` and dependencies using the proxy defined in build args.
+- **`docker-compose.yml`**: Orchestrates the container, injects `.env` variables, and manages the persistent volume.
+- **`bot.js`**: The main logic script. Handles connection, ID normalization, and message processing.
+- **`.dockerignore`**: Prevents local garbage (`node_modules`, `auth_info`) from polluting the container build.
+- **`.gitignore`**: Prevents secrets (`.env`, `auth_info/`) from being pushed to the Git repository.
 
+---
+
+## 7. Troubleshooting
+
+### The bot connects but ignores my commands
+- **Cause**: Identity mismatch. WhatsApp Multi-Device often sends a LID (Linked Identity ID) which differs from your Phone JID.
+- **Solution**:
+    1. Check logs: `docker logs -f wa-bot`.
+    2. Look for the line: `📩 Commande reçue de [12345...@lid]`.
+    3. Copy this ID.
+    4. Add it to `ALLOWED_IDS` in your `.env` file (comma-separated).
+    5. Restart: `docker compose up -d`.
+
+### "npm install" fails during build
+- **Cause**: Network restriction / Proxy issue.
+- **Solution**: Ensure `http_proxy` variables are correctly set in the `.env` file. The `Dockerfile` is configured to consume these variables as build arguments.
+
+### Session loop / Disconnects
+- **Cause**: The `auth_info` folder might be corrupted or invalid.
+- **Solution**:
+    1. Stop the bot: `docker compose down`.
+    2. Delete local session data: `rm -rf auth_info/`.
+    3. Restart and rescan QR: `docker compose up -d`.
+
+---
+
+## 8. Maintenance commands
+
+**Update the bot code:**
 ```bash
-# Install pm2 globally
-sudo npm install -g pm2
-
-# Start bot with pm2 (example: throttle 1s, no feedback)
-pm2 start bot.js --name wa-bot --update-env --env THROTTLE_SEC=1 --env THROTTLE_FEEDBACK=0
-
-# Start keepalive script under pm2 (bash interpreter)
-pm2 start ./keepalive.sh --name keepalive --interpreter bash
-
-# Save process list (so it can be resurrected)
-pm2 save
-
-# Setup startup script so pm2 comes up after reboot
-pm2 startup
-# Copy-paste the command it outputs, e.g.:
-# sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu
+git pull
+docker compose up -d --build
 ```
 
-Check status:
+**View live logs:**
 ```bash
-pm2 ls
-pm2 logs wa-bot
-pm2 logs keepalive
+docker logs -f wa-bot
 ```
 
----
-
-## 8. Keepalive Script Content (for clarity)
-
+**Restart the bot:**
 ```bash
-#!/bin/bash
-# keepalive.sh : garde l'instance Oracle active en pingant toutes les 10 minutes.
-set -e
-
-while true; do
-  if curl -fsS https://ifconfig.me > /dev/null; then
-    sleep 600
-  else
-    sleep 60
-  fi
-done
+docker compose restart wa-bot
 ```
 
 ---
 
-## 9. Making it Survive Reboots
-
-`pm2 save` + `pm2 startup` ensure:
-- `pm2` daemon is registered as a systemd service.
-- On reboot, `pm2` restores saved processes (`wa-bot` and `keepalive`) automatically.
-- **No crontab is needed** if both are under `pm2`.
-
----
-
-## 10. Troubleshooting
-
-- **No QR appears**: Ensure `node bot.js` is running and your terminal supports displaying the ASCII QR. Check network connectivity.
-- **Mention not working**: Validate the trigger syntax (`# message`) and confirm you are sending from your own account. Watch logs for `✅ Mentionné X membres`.
-- **Throttle message appears**: You hit the throttle; either wait `THROTTLE_SEC` seconds or use `#!` to force.
-- **Bot disconnected**: The script auto-reconnects. Look for reconnection logs and eventual `✅ Bot connecté à WhatsApp`.
-- **Keepalive not running**: Check with `pm2 ls` for `keepalive`. Use `pm2 logs keepalive` for its output.
-
----
-
-## 11. Staying in Oracle Cloud Free Tier
-
-You are safe as long as:
-- You run only this Always Free–eligible instance (e.g., VM.Standard.E2.1.Micro).  
-- You do not provision extra non-free resources.  
-- Your scripts produce minimal network egress (keepalive is small) and keep the account active.  
-- You don’t manually upgrade to paid shapes unintentionally.
-
-> The keepalive helps the tenancy remain active; `pm2` ensures uptime. No billing will occur if you stay within Always Free constraints.
-
----
-
-## 12. Security Notes
-
-- **Do not expose the `auth/` directory**: It contains your WhatsApp session.  
-- **Limit usage**: Avoid spamming large groups too frequently to prevent WhatsApp rate-limiting or restrictions.  
-- **Backup**: You can back up `auth/` securely if you migrate to another instance.
-
----
-
-## 13. Suggested `.gitignore`
-
-```gitignore
-node_modules/
-auth/
-npm-debug.log
-.env
-```
-
----
-
-## 14. Example Commands Summary
-
-```bash
-# install deps
-npm install baileys qrcode-terminal pino
-
-# first run (scan QR)
-node bot.js
-
-# run persistently with pm2
-sudo npm install -g pm2
-pm2 start bot.js --name wa-bot --env THROTTLE_SEC=1 --env THROTTLE_FEEDBACK=0
-pm2 start ./keepalive.sh --name keepalive --interpreter bash
-pm2 save
-pm2 startup
-```
-
----
-
-## 15. Credits & License
+## 9. License & Disclaimer
 
 **Author:** KpihX  
-**Project:** wa-mention-all  
+This project is for educational and personal use.  
+**Warning**: Spamming "mention all" in groups can lead to account bans by WhatsApp. Use responsibly and only in groups where you have permission.
+```

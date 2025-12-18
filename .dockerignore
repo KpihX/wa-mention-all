@@ -1,0 +1,23 @@
+// --- Ignorer les dépendances locales ---
+node_modules
+
+// --- Ignorer la session locale ---
+// La session doit être montée via un VOLUME, pas copiée dans l'image.
+auth_info
+
+// --- Ignorer les fichiers de versionning ---
+.git
+.gitignore
+
+// --- Ignorer les secrets ---
+.env
+.env.example
+
+// --- Ignorer les fichiers Docker eux-mêmes ---
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+// --- Ignorer la documentation et logs ---
+README.md
+*log
