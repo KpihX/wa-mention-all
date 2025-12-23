@@ -1,7 +1,7 @@
 services:
   wa-bot:
     build: .
-    container_name: wa-bot
+    # container_name: wa-bot
     restart: unless-stopped
     env_file:
       - .env
