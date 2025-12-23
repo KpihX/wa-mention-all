@@ -20,7 +20,7 @@ deploy_homelab:
     # - echo "http_proxy=http://129.104.201.11:8080" >> .env
     # - echo "https_proxy=http://129.104.201.11:8080" >> .env
     
-    # 1. NETTOYAGE BRUTAL (On tue par le nom explicite)
+    # 1. NETTOYAGE BRUTAL (On tue par le nom explicite).
     # Le "|| true" permet de ne pas planter si le conteneur n'existe pas encore
     - docker rm -f wa-bot || true
     
