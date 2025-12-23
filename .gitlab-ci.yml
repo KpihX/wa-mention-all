@@ -1,5 +1,6 @@
 stages:
   - deploy
+  - sync
 
 deploy_homelab:
   stage: deploy
@@ -27,3 +28,25 @@ deploy_homelab:
     - docker image prune -f
     
     - echo "✅ Déploiement terminé ! Application accessible."
+
+sync_github:
+  stage: sync
+  variables:
+    GITHUB_ORG: "kpihx-labs"
+    REPO_NAME: "wa-bot"
+  only:
+    - main
+  script:
+    - echo "🔍 Vérification/Création du repo sur GitHub..."
+    - |
+      curl -H "Authorization: token ${GITHUB_TOKEN}" \
+           -X POST \
+           -d "{\"name\":\"${REPO_NAME}\", \"private\":false}" \
+           https://api.github.com/orgs/${GITHUB_ORG}/repos || true
+    
+    - echo "🔄 Synchronisation..."
+    # On s'assure que le remote est bien configuré
+    - git remote add github https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_ORG}/${REPO_NAME}.git || git remote set-url github https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_ORG}/${REPO_NAME}.git
+    
+    # Correction ici : on pousse explicitement le SHA actuel vers la branche main distante
+    - git push github $CI_COMMIT_SHA:refs/heads/main --force
