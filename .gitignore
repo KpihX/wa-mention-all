@@ -4,7 +4,8 @@ package-lock.json
 
 # --- Security & Secrets (CRITICAL) ---
 .env                
-auth_info/          # Contient la session WhatsApp (clés de chiffrement)
+auth_info/          
+# Contient la session WhatsApp (clés de chiffrement)
 
 # --- Logs & Debug ---
 npm-debug.log*
