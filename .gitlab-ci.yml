@@ -1,0 +1,29 @@
+stages:
+  - deploy
+
+deploy_homelab:
+  stage: deploy
+  tags:
+    - homelab 
+  only:
+    - main     # Se lance uniquement quand on push sur la branche main
+  script:
+    - echo "🚀 Démarrage du déploiement sur le Homelab..."
+    
+    # 1. On recrée le fichier .env avec les secrets stockés dans GitLab
+    - echo "ALLOWED_IDS=$ALLOWED_IDS" >> .env
+    - echo "THROTTLE_FEEDBACK=2" >> .env
+    - echo "THROTTLE_FEEDBACK=0" >> .env
+    
+    # On ajoute le proxy (hérité des variables de groupe si configuré, sinon on le force ici par sécurité)
+    # - echo "http_proxy=http://129.104.201.11:8080" >> .env
+    # - echo "https_proxy=http://129.104.201.11:8080" >> .env
+    
+    # 2. Lancement de Docker Compose
+    # Le runner exécute ça directement sur ton serveur
+    - docker compose up -d --build --remove-orphans
+    
+    # 3. Nettoyage des vieilles images pour ne pas saturer le disque
+    - docker image prune -f
+    
+    - echo "✅ Déploiement terminé ! Application accessible."
