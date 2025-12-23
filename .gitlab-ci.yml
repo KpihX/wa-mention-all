@@ -11,7 +11,7 @@ deploy_homelab:
   script:
     - echo "🚀 Démarrage du déploiement sur le Homelab..."
     
-    # 1. On recrée le fichier .env avec les secrets stockés dans GitLab
+    # 0. On recrée le fichier .env avec les secrets stockés dans GitLab
     - echo "ALLOWED_IDS=$ALLOWED_IDS" >> .env
     - echo "THROTTLE_FEEDBACK=2" >> .env
     - echo "THROTTLE_FEEDBACK=0" >> .env
@@ -20,10 +20,14 @@ deploy_homelab:
     # - echo "http_proxy=http://129.104.201.11:8080" >> .env
     # - echo "https_proxy=http://129.104.201.11:8080" >> .env
     
-    # 2. Lancement de Docker Compose
-    # Le runner exécute ça directement sur ton serveur
-    - docker compose down --remove-orphans
-    - docker compose up -d --build
+    # 1. NETTOYAGE BRUTAL (On tue par le nom explicite)
+    # Le "|| true" permet de ne pas planter si le conteneur n'existe pas encore
+    - docker rm -f wa-bot || true
+    
+    # 2. DÉPLOIEMENT PROPRE
+    # --force-recreate : Oblige à refaire le conteneur
+    # --remove-orphans : Supprime les vieux conteneurs qui auraient changé de nom
+    - docker compose up -d --build --force-recreate --remove-orphans
     
     # 3. Nettoyage des vieilles images pour ne pas saturer le disque
     - docker image prune -f
